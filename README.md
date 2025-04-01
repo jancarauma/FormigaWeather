@@ -54,7 +54,7 @@ Um sistema IoT completo para monitoramento ambiental, capaz de:
 - Observações: Os preços foram obtidos de fornecedores brasileiros e podem variar conforme a sua região e o fornecedor.
 
 ## 🔌 Diagrama de Ligações
-![Ligações da Estação FormigaWeather](circuit.jpg)  
+![Ligações da Estação FormigaWeather](circuit.png)  
 *Exemplo de conexão dos sensores com o NodeMCU:*
 - DHT11 ➔ GPIO4 (D2) + resistor 10kΩ
 - BMP180 ➔ I2C (SDA: D1, SCL: D2)
@@ -90,12 +90,12 @@ Antes de começar, certifique-se de ter o seguinte instalado e configurado:
 2. **Instalar a Biblioteca Adafruit BMP085:**
    - Faça o download da biblioteca através deste [link](https://github.com/jancarauma/FormigaWeather/blob/main/Adafruit_Sensor-master.zip).
    - Na Arduino IDE, vá em **Sketch > Incluir Biblioteca > Adicionar Biblioteca .ZIP**.
-   - Selecione o arquivo baixado e conclua a instalação.
+   - Selecione o arquivo baixado (Adafruit_Sensor-master.zip) e conclua a instalação.
 
 3. **Instalar a Biblioteca DHT sensor library:**
    - Faça o download da biblioteca através deste [link](https://github.com/jancarauma/FormigaWeather/blob/main/DHT-sensor-library.zip).
    - Na Arduino IDE, vá em **Sketch > Incluir Biblioteca > Adicionar Biblioteca .ZIP**.
-   - Selecione o arquivo baixado e conclua a instalação.
+   - Selecione o arquivo baixado (DHT-sensor-library.zip) e conclua a instalação.
 
 Após seguir esses passos, sua Arduino IDE estará configurada corretamente para compilar e carregar o projeto da estação no NodeMCU ESP8266.
 
