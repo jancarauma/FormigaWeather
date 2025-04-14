@@ -56,8 +56,8 @@ Um sistema IoT completo para monitoramento ambiental, capaz de:
 ## 🔌 Diagrama de Ligações
 ![Ligações da Estação FormigaWeather](circuit.png)  
 *Exemplo de conexão dos sensores com o NodeMCU:*
-- DHT11 ➔ GPIO4 (D2) + resistor 10kΩ
-- BMP180 ➔ I2C (SDA: D1, SCL: D2)
+- DHT11 ➔ D4 + resistor 10 kΩ
+- BMP180 ➔ (SDA: D2, SCL: D1)
 - MQ-135 ➔ A0
 - MH-RD ➔ D5
 
