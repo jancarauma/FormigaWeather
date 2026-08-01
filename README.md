@@ -14,7 +14,7 @@ Perfect for makers, educators, and IoT enthusiasts!
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![Version](https://img.shields.io/badge/Version-1.0.0-blue)](https://github.com/jancarauma/FormigaWeather)
 
-![Dashboard da Estação FormigaWeather](estacaoformiga.png)  
+<img width="1246" height="1592" alt="image" src="https://github.com/user-attachments/assets/11a7e8a5-2983-465d-bec3-2cc729334ef8" />
 *Captura do Web Server Responsivo*
 
 ## 🚀 Funcionalidades
