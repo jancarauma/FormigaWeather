@@ -24,9 +24,10 @@ const char* apPassword = "senha123";
 //TODO IPAddress apGateway(192, 168, 4, 1);
 //TODO IPAddress apSubnet(255, 255, 255, 0);
 
-// Configuração Gemini (Opcional)
+// Assistente Virtual com IA (Opcional)
+// 
 // Preencha para habilitar o chat da Ana. Deixe vazio para ocultar o chat.
-const char* GEMINI_KEY            = ""; // obtenha a key (chave) em https://aistudio.google.com
+const char* GEMINI_KEY            = "";
 const char* GEMINI_MODEL          = "gemini-3.1-flash-lite-preview";
 const char* GEMINI_FALLBACK_MODEL = "gemini-1.5-flash";
 
@@ -36,7 +37,7 @@ struct SensorReading {
     String status; // "ok", "nan", "range", "offline"
 };
 
-// Hardware e Pinagem
+// Pinagem
 
 #define DHTPIN 2
 #define DHTTYPE DHT11
@@ -195,7 +196,7 @@ String getFormattedTime() {
     return String(buffer);
 }
 
-// Registros LOG
+// Registros / Log
 
 void logError(String sensor, String message) {
     String entry = "[ERRO][" + getFormattedTime() + "][" + sensor + "] " + message + "\n";
@@ -357,8 +358,9 @@ void handle_NotFound() {
 }
 
 // Blocos de HTML fixos (em FLASH, não em RAM)
+//
 // Cada bloco grande fica em PROGMEM e é enviado direto por
-// sendContent_P, nunca é copiado inteiro para RAM. Só os
+// sendContent_P — nunca é copiado inteiro para RAM. Só os
 // trechos pequenos e dinâmicos (badges, valores, timestamp,
 // config do Gemini) usam String, e são poucos bytes cada.
 
@@ -429,6 +431,7 @@ body {
   transition: background 0.4s ease, color 0.3s ease;
 }
 
+/* Header centralizado */
 header {
   background: var(--header-grad);
   border-bottom: 1px solid var(--border);
@@ -518,8 +521,10 @@ header p {
   box-shadow: 0 0 12px var(--card-shadow);
 }
 
+/* Layout */
 main { padding: 28px 24px; max-width: 1280px; margin: 0 auto; }
 
+/* Métricas */
 .metrics {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
@@ -579,6 +584,7 @@ main { padding: 28px 24px; max-width: 1280px; margin: 0 auto; }
 .metric-value.invalid { color: var(--muted); font-size: 1.4rem; }
 .metric-sub { font-size: 0.7rem; color: var(--sub); margin-top: 4px; }
 
+/* Gráficos */
 .charts {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -603,6 +609,7 @@ main { padding: 28px 24px; max-width: 1280px; margin: 0 auto; }
 }
 canvas { width: 100% !important; height: 200px !important; }
 
+/* Rodapé de controles */
 .footer-bar {
   display: flex;
   align-items: center;
@@ -654,6 +661,7 @@ button.primary:hover {
   color: var(--btn-primary-text);
 }
 
+/* Chat da Ana */
 .ana-section {
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -692,11 +700,33 @@ button.primary:hover {
   color: var(--sub);
   margin-top: 1px;
 }
-.ana-toggle {
+.ana-clear-btn {
   margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.76rem;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.ana-clear-btn:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+}
+.ana-toggle {
   font-size: 0.7rem;
   color: var(--muted);
   font-family: var(--mono);
+  flex-shrink: 0;
 }
 
 .ana-body { padding: 0 16px 16px; }
@@ -756,6 +786,28 @@ button.primary:hover {
   animation: blinkCursor 0.9s steps(1) infinite;
 }
 @keyframes blinkCursor { 0%, 50% { opacity: 1; } 51%, 100% { opacity: 0; } }
+
+.bubble strong { color: var(--accent); font-weight: 700; }
+.bubble em { font-style: italic; }
+.bubble code {
+  font-family: var(--mono);
+  font-size: 0.78em;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.bubble pre.md-code {
+  font-family: var(--mono);
+  font-size: 0.76em;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 6px 0;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 
 .quick-btns {
   display: flex;
@@ -1059,6 +1111,17 @@ function toggleChat() {
   if (tog)  tog.textContent = chatOpen ? '▲ recolher' : '▼ expandir';
 }
 
+function limparChat() {
+  const msgs = document.getElementById('chat-messages');
+  if (!msgs || !msgs.hasChildNodes()) return;
+  if (!confirm('Limpar toda a conversa com a Ana?')) return;
+  msgs.innerHTML = '';
+  chatHistory = [];
+  if (ANA_ENABLED) {
+    typeBubble('Conversa limpa. Em que posso ajudar agora? 🌤️', 'ana');
+  }
+}
+
 function buildSensorContext() {
   if (!lastSensorData) return 'Ainda aguardando leitura dos sensores.';
   const d = lastSensorData;
@@ -1091,31 +1154,56 @@ function removeThinking() {
   if (t) t.remove();
 }
 
-// Anima a resposta da Ana aparecendo palavra por palavra, com cursor piscando
+// Converte um subconjunto seguro de Markdown (negrito, itálico, código, quebras
+// de linha e listas simples) em HTML. Escapa entidades HTML antes de tudo,
+// para nunca injetar marcação vinda da resposta da IA.
+function renderMarkdown(text) {
+  let out = String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  // Bloco de código ```...```
+  out = out.replace(/```([\s\S]*?)```/g, (_, code) => '<pre class="md-code">' + code.trim() + '</pre>');
+  // Código inline `...`
+  out = out.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+  // Negrito **texto** ou __texto__ (processado antes do itálico)
+  out = out.replace(/\*\*([^\n*]+)\*\*/g, '<strong>$1</strong>');
+  out = out.replace(/__([^\n_]+)__/g, '<strong>$1</strong>');
+  // Itálico *texto* ou _texto_ (o que sobrar depois do negrito)
+  out = out.replace(/\*([^\n*]+)\*/g, '<em>$1</em>');
+  out = out.replace(/(^|[^\w_])_([^\n_]+)_(?!\w)/g, '$1<em>$2</em>');
+  // Listas simples "- item" ou "* item" no início da linha
+  out = out.replace(/^[-*]\s+(.+)$/gm, '• $1');
+  // Quebras de linha
+  out = out.replace(/\n/g, '<br>');
+  return out;
+}
+
+// Anima a resposta da Ana aparecendo palavra por palavra, já renderizando
+// Markdown (negrito, itálico, código) conforme o texto vai surgindo.
 function typeBubble(text, role) {
   const msgs = document.getElementById('chat-messages');
   if (!msgs) return Promise.resolve();
   const div = document.createElement('div');
   div.className = 'bubble ' + role + ' typing';
-  const cursor = document.createElement('span');
-  cursor.className = 'type-cursor';
-  div.appendChild(cursor);
   msgs.appendChild(div);
   msgs.scrollTop = msgs.scrollHeight;
 
   const palavras = text.split(' ');
   let i = 0;
+  let acumulado = '';
   return new Promise(resolve => {
     function passo() {
       if (i < palavras.length) {
-        const pedaco = document.createTextNode((i === 0 ? '' : ' ') + palavras[i]);
-        div.insertBefore(pedaco, cursor);
+        acumulado += (i === 0 ? '' : ' ') + palavras[i];
+        div.innerHTML = renderMarkdown(acumulado) + '<span class="type-cursor"></span>';
         i++;
         msgs.scrollTop = msgs.scrollHeight;
         setTimeout(passo, 28 + Math.random() * 42);
       } else {
         div.classList.remove('typing');
-        cursor.remove();
+        div.innerHTML = renderMarkdown(acumulado);
         resolve(div);
       }
     }
@@ -1172,7 +1260,7 @@ async function askAna(userText) {
 
   } catch(e) {
     removeThinking();
-    addBubble('Ops, não consegui me conectar ao servidor de IA. Verifique a chave Gemini e a conexão com a internet.', 'ana');
+    typeBubble('Ops, não consegui me conectar ao servidor de IA. Verifique a chave Gemini e a conexão com a internet.', 'ana');
     console.error('Gemini error:', e);
   }
 }
@@ -1308,6 +1396,7 @@ static const char PAGE_ANA_SECTION[] PROGMEM = R"rawliteral(
         <h3>Ana · Assistente Meteorológica</h3>
         <p>Pergunte sobre as condições ambientais da estação</p>
       </div>
+      <button class="ana-clear-btn" title="Limpar conversa" aria-label="Limpar conversa" onclick="event.stopPropagation(); limparChat();">🗑</button>
       <span class="ana-toggle" id="ana-toggle">▲ recolher</span>
     </div>
     <div class="ana-body" id="ana-body">
@@ -1332,6 +1421,7 @@ static const char PAGE_TAIL[] PROGMEM = R"rawliteral(
 </html>)rawliteral";
 
 // Handler principal: envia a página em pedaços (chunked)
+//
 // Nenhuma "String html" gigante é criada. Cada bloco grande vem
 // direto da flash (sendContent_P) e só os trechos pequenos e
 // dinâmicos passam por String, um de cada vez.
@@ -1398,4 +1488,3 @@ void handle_OnConnect() {
     // Encerra a resposta chunked
     server.sendContent("");
 }
-
