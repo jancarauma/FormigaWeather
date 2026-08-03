@@ -1,149 +1,123 @@
-# FormigaWeather - IoT Weather Station 🌐🌡️  
-*Your low-cost, open-source IoT weather station*
+# FormigaWeather | Estação Formiga
+### Estação Meteorológica com Inteligência Artificial e de Baixo Custo
 
-🌦️ An open-source IoT weather station project for monitoring air quality, temperature, humidity, pressure, and rain.  
-Developed using NodeMCU ESP8266, MQ-135, BMP180, DHT11 sensors, and the MH-RD rain module.  
-Data is accessible via a responsive web server and exportable to CSV.  
-Perfect for makers, educators, and IoT enthusiasts!  
+A low-cost, open-source IoT weather station built on the ESP8266, with a responsive local web dashboard, persistent on-device data logging, and an optional AI assistant for interpreting the readings.
 
-# FormigaWeather - Estação Meteorológica IoT 🌐🌡️  
-*Sua estação meteorológica IoT de baixo custo e código aberto*
+Blog Post: https://www.carauma.com/estacao-meteorologica-baixo-custo-esp8266-formiga
 
-🌦️ Um projeto open-source de estação meteorológica IoT para monitorar qualidade do ar, temperatura, umidade, pressão e chuva.   Desenvolvido com NodeMCU ESP8266, sensores MQ-135, BMP180, DHT11 e módulo de chuva MH-RD.   Dados acessíveis via web server responsivo e exportáveis para CSV. Ideal para makers, educadores e entusiastas de IoT!
+<img width="1897" height="1549" alt="image" src="https://github.com/user-attachments/assets/f7eee22b-203f-4a89-bb0d-091bd60d8bce" />
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/Version-1.0.0-blue)](https://github.com/jancarauma/FormigaWeather)
 
-<img width="1246" height="1592" alt="image" src="https://github.com/user-attachments/assets/11a7e8a5-2983-465d-bec3-2cc729334ef8" />
-*Captura do Web Server Responsivo*
+## Overview
 
-## 🚀 Funcionalidades
-Um sistema IoT completo para monitoramento ambiental, capaz de:
+FormigaWeather turns a NodeMCU ESP8266 and a handful of common sensors into a self-contained environmental monitoring station. It measures air quality, temperature, humidity, atmospheric pressure, and rainfall, and serves the data through a web interface hosted directly on the microcontroller — no cloud service, no subscription, no external server required.
 
-- **Interface Web Responsiva:**  
-  O ESP8266 hospeda um site acessível via `http://estacaoformiga.local` na rede WiFi local, se não houver rede WiFi disponível, o ESP cria a rede WiFi ainda assim, ideal para locais sem disponibilidade de internet, exibindo os dados dos sensores em tempo real para acesso local.
+The project was built with a specific goal in mind: make it possible for schools, hobbyists, and makers to build and understand a real sensor network for a total cost of around US$30, using parts that are easy to find and a codebase that is easy to read and modify.
 
-- **Medição de Qualidade do Ar:**  
-  Utiliza o sensor **MQ-135** para detecção de gases e poluentes.
+## Features
 
-- **Medição Barométrica:**  
-  O sensor **BMP180** mede pressão atmosférica e possibilita estimativas, inclusive, de altitude.
+- **Self-hosted web dashboard.** The ESP8266 serves its own responsive site at `http://estacaoformiga.local`, with live charts for temperature, humidity, pressure, and air quality.
+- **Works with or without an existing Wi-Fi network.** If no network is available, the device automatically starts its own access point so you can still connect and view the data.
+- **Persistent on-device history.** Sensor readings are logged to a compact circular buffer stored in flash (LittleFS), so historical data survives power loss and reboots — no external database needed.
+- **CSV export and system logs.** Download the recorded history as a CSV file, or review a running log of connection and sensor events, directly from the dashboard.
+- **JSON API.** Simple HTTP endpoints (`/dados`, `/historico`, `/logs`) expose current readings, stored history, and diagnostics for anyone who wants to build their own client or integration.
+- **Optional AI assistant.** With a free Gemini API key, the dashboard includes "Ana," a conversational assistant that can answer questions about current conditions in plain language. It is entirely optional and the station works normally without it.
+- **Light and dark themes**, sensor status badges (ok / out of range / offline), and graceful handling of sensor failures.
 
-- **Medição de Temperatura e Umidade:**  
-  O sensor **DHT11** capta informações de temperatura e umidade relativa.
+## Hardware
 
-- **Detecção de Chuva:**  
-  Sensor **MH-RD Raindrops** para monitorar a presença de chuva.
+| Component        | Function                          | Qty |
+|-------------------|-----------------------------------|-----|
+| NodeMCU ESP8266   | Wi-Fi microcontroller             | 1   |
+| MQ-135            | Air quality (CO2 / VOC)           | 1   |
+| BMP180            | Atmospheric pressure and altitude | 1   |
+| DHT11             | Temperature and humidity          | 1   |
+| MH-RD rain sensor | Rain detection                    | 1   |
+| 10 kΩ resistor    | Pull-up for the DHT11             | 1   |
+| Breadboard        | Prototyping board                 | 1   |
+| Jumper wires      | Connections                       | —   |
 
-- **Exportação CSV e Logs:**  
-  O site conta com um botão para exportar os dados em formato CSV e outro para monitorar os logs do sistema.
+Estimated total cost: **R$ 143.48** (approx. US$25–30, prices from Brazilian retailers, March 2025). Prices will vary by region and supplier.
 
-## 📟 Componentes Utilizados
-| Componente          | Função                          | Qtd |
-|---------------------|---------------------------------|-----|
-| NodeMCU ESP8266     | Microcontrolador Wi-Fi          |  1  |
-| Sensor MQ-135       | Qualidade do ar (CO2/VOC)       |  1  |
-| Sensor BMP180       | Pressão atmosférica e altitude  |  1  |
-| Sensor DHT11        | Temperatura e umidade           |  1  |
-| Módulo MH-RD        | Detecção de chuva               |  1  |
-| Resistor 10kΩ       | Pull-up para DHT11              |  1  |
-| Protoboard          | Placa de prototipagem           |  1  |
-| Fios jumper         | Fios diversos para conexões     |  1  |
+### Wiring
 
-### Custo Total Estimado: R$ 143,48
-- Observações: Os preços foram obtidos de fornecedores brasileiros e podem variar conforme a sua região e o fornecedor.
+- DHT11 → D4 (with a 10 kΩ pull-up resistor between VCC and signal)
+- BMP180 → I2C (SDA: D2, SCL: D1)
+- MQ-135 → A0 (analog input)
+- MH-RD → D5 (digital input)
 
-## 🔌 Diagrama de Ligações
-![Ligações da Estação FormigaWeather](circuit.png)  
-*Exemplo de conexão dos sensores com o NodeMCU:*
-- DHT11 ➔ D4 + resistor 10 kΩ
-- BMP180 ➔ (SDA: D2, SCL: D1)
-- MQ-135 ➔ A0
-- MH-RD ➔ D5
+## Getting Started
 
-## ⚙️ Configuração
+### Requirements
 
-### Pré-requisitos
+- Arduino IDE 1.8.18 or later
+- ESP8266 board package
+- Libraries: `Adafruit BMP085 Library`, `DHT sensor library`
 
-Antes de começar, certifique-se de ter o seguinte instalado e configurado:
+### Setup
 
-- **Arduino IDE 1.8.18 ou superior**
-- **Bibliotecas Necessárias:**
-  - `Adafruit BMP085 Library`
-  - `DHT sensor library`
-  - `ESP8266WiFi`
-
-#### Configuração da IDE e Instalação das Bibliotecas
-
-1. **Configurar o Gerenciador de Placas para ESP8266:**
-   - Abra a Arduino IDE.
-   - Vá em **Arquivo > Preferências**.
-   - No campo "URLs adicionais para gerenciadores de placas", adicione:
-     ```
-     http://arduino.esp8266.com/stable/package_esp8266com_index.json
-     ```
-   - Clique em "OK".
-   - Acesse **Ferramentas > Placa > Gerenciador de Placas**.
-   - Busque por "ESP8266" e instale o pacote correspondente.
-   - Em **Ferramentas > Placa**, selecione a opção **NodeMCU 1.0 (ESP-12E Module)**.
-
-2. **Instalar a Biblioteca Adafruit BMP085:**
-   - Faça o download da biblioteca através deste [link](https://github.com/jancarauma/FormigaWeather/blob/main/Adafruit_Sensor-master.zip).
-   - Na Arduino IDE, vá em **Sketch > Incluir Biblioteca > Adicionar Biblioteca .ZIP**.
-   - Selecione o arquivo baixado (Adafruit_Sensor-master.zip) e conclua a instalação.
-
-3. **Instalar a Biblioteca DHT sensor library:**
-   - Faça o download da biblioteca através deste [link](https://github.com/jancarauma/FormigaWeather/blob/main/DHT-sensor-library.zip).
-   - Na Arduino IDE, vá em **Sketch > Incluir Biblioteca > Adicionar Biblioteca .ZIP**.
-   - Selecione o arquivo baixado (DHT-sensor-library.zip) e conclua a instalação.
-
-Após seguir esses passos, sua Arduino IDE estará configurada corretamente para compilar e carregar o projeto da estação no NodeMCU ESP8266.
-
-### Instalação
-1. Clone o repositório:
-   ```bash
-   git clone https://github.com/seuuser/FormigaWeather.git
+1. In Arduino IDE, go to **File → Preferences** and add the following to "Additional Boards Manager URLs":
    ```
-2. Abra o projeto na Arduino IDE:
-   - Certifique-se de que sua IDE Arduino esteja configurada conforme os pré-requisitos.
-   - Abra o arquivo [estacao_formiga.ino](estacao_formiga.ino).
-3. Configure a rede WiFi:
-   - No código, altere a variável ssid (atualmente "dlink") para o nome da sua rede WiFi.
-   - Modifique a variável password para a senha da sua rede WiFi.
-4. Verifique as conexões do circuito:
-   - Confirme se todas as ligações do circuito da estação estão corretas.
-5. Carregue o código no ESP8266:
-   - Conecte o ESP8266 via USB ao seu computador.
-   - Selecione a porta correta e faça o upload do código.
-6. Monitore a saída serial:
-   - Abra o Monitor Serial na Arduino IDE para verificar se o dispositivo está funcionando corretamente ou se há alguma mensagem de erro.
-7. Acesse a interface web:
-  - Caso não haja erros, conecte seu computador ou celular à mesma rede WiFi do ESP8266.
-  - Se não houver rede WiFi disponível, o ESP8266 criará uma rede própria chamada Estacao_Formiga com a senha senha123.
-  - Em seguida, abra seu navegador e acesse: http://estacaoformiga.local ou utilize o endereço IP exibido no Monitor Serial.
+   http://arduino.esp8266.com/stable/package_esp8266com_index.json
+   ```
+2. Go to **Tools → Board → Boards Manager**, search for "ESP8266," and install the package.
+3. Under **Tools → Board**, select **NodeMCU 1.0 (ESP-12E Module)**.
+4. Install the two required libraries via **Sketch → Include Library → Add .ZIP Library**:
+   - [Adafruit_Sensor-master.zip](https://github.com/jancarauma/FormigaWeather/blob/main/Adafruit_Sensor-master.zip)
+   - [DHT-sensor-library.zip](https://github.com/jancarauma/FormigaWeather/blob/main/DHT-sensor-library.zip)
 
-## 🖥️ Como Usar
-- Conecte-se à mesma rede Wi-Fi da estação
-- Acesse http://estacaoformiga.local ou o IP local do NodeMCU (Disponível no Monitor Serial)
-- Interaja com os botões:
-  - 📥 Exportar CSV: Gera arquivo com dados no formato:
-    - Data, Hora, Temperatura, Umidade,Pressao,QualidadeAr,Chuva
+### Installation
 
-  - 📜 Logs do Sistema: Exibe histórico de conexões e eventos
+```bash
+git clone https://github.com/jancarauma/FormigaWeather.git
+```
 
-## 🌟 Contribuição
-Contribuições são bem-vindas! Siga estes passos:
+1. Open `estacao_formiga.ino` in the Arduino IDE.
+2. Set your Wi-Fi credentials in the `ssid` and `password` variables. If you leave them as-is (or have no Wi-Fi available), the ESP8266 will create its own network, `Estacao_Formiga`, with the password `senha123`.
+3. Double-check the wiring against the table above.
+4. Connect the ESP8266 via USB, select the correct port, and upload the sketch.
+5. Open the Serial Monitor to confirm the device started correctly.
+6. Connect your phone or computer to the same network as the station and visit `http://estacaoformiga.local`, or use the IP address printed in the Serial Monitor.
 
-- Faça um fork do projeto
-- Crie uma branch (git checkout -b feature/nova-feature)
-- Commit suas mudanças (git commit -m 'Adiciona nova feature')
-- Push para a branch (git push origin feature/nova-feature)
-- Abra um Pull Request
+### Enabling the AI assistant (optional)
 
-## 📄 Licença
-Distribuído sob licença MIT. Veja LICENSE para mais detalhes.
+To enable "Ana," the built-in conversational assistant:
 
-## 🙌 Agradecimentos
-- Comunidade Arduino/ESP8266
-- Autores das bibliotecas utilizadas
-- Inspiração em projetos open-source de IoT
+1. Create a free API key at [Google AI Studio](https://aistudio.google.com/).
+2. Paste it into the sketch:
+   ```cpp
+   const char* GEMINI_KEY = "your-key-here";
+   ```
+3. Recompile and upload. The assistant will appear automatically on the dashboard, with access to the station's current sensor readings. Leave the key blank to keep the dashboard running without it.
+
+## Using the Dashboard
+
+Once connected to the station's network:
+
+- Visit `http://estacaoformiga.local` (or the IP shown in the Serial Monitor) to view live readings and charts.
+- **Export CSV** downloads the session's recorded data in the format: `Date, Time, Temperature, Humidity, Pressure, AirQuality, Rain`.
+- **System Logs** shows a running history of connection events and sensor errors.
+- **Stored history** shows how much data is currently saved on the device and lets you clear it if needed.
+
+## Project Structure
+
+The firmware is written as a single Arduino sketch. HTML/CSS/JS for the dashboard is stored in flash (`PROGMEM`) and streamed to the browser in chunks, keeping RAM usage low and stable even on the ESP8266's limited memory. Sensor readings are validated against plausibility ranges before being reported, and each sensor's status (ok, out of range, or offline) is tracked and surfaced in the interface rather than silently ignored.
+
+## Contributing
+
+Contributions are welcome. To propose a change:
+
+1. Fork the repository
+2. Create a branch (`git checkout -b feature/my-feature`)
+3. Commit your changes (`git commit -m 'Add my feature'`)
+4. Push the branch (`git push origin feature/my-feature`)
+5. Open a pull request
+
+## License
+
+Distributed under the MIT License. See `LICENSE` for details.
+
+## Acknowledgments
+
+This project grew out of collaboration with Dr. Paulo Marotti, professor at the Federal University of Roraima (UFRR), and his work with students in the municipality of Uiramutã, Roraima. Thanks also to the Arduino/ESP8266 community and the maintainers of the libraries this project relies on.
