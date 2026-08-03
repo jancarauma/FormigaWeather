@@ -12,6 +12,7 @@
 #include <Adafruit_BMP085.h>
 #include <time.h>
 #include <Ticker.h>
+#include <LittleFS.h>
 
 // Configurações da rede
 const char* ssid = "dlink";
@@ -24,12 +25,13 @@ const char* apPassword = "senha123";
 //TODO IPAddress apGateway(192, 168, 4, 1);
 //TODO IPAddress apSubnet(255, 255, 255, 0);
 
-// Assistente Virtual com IA (Opcional)
-// 
+// ::: Configuração Gemini (opcional)
 // Preencha para habilitar o chat da Ana. Deixe vazio para ocultar o chat.
-const char* GEMINI_KEY            = "";
+const char* GEMINI_KEY            = ""; // <-- coloque sua chave/key aqui
 const char* GEMINI_MODEL          = "gemini-3.1-flash-lite-preview";
 const char* GEMINI_FALLBACK_MODEL = "gemini-1.5-flash";
+
+// ::: Tipos
 
 struct SensorReading {
     float value;
@@ -37,7 +39,43 @@ struct SensorReading {
     String status; // "ok", "nan", "range", "offline"
 };
 
-// Pinagem
+// ::: Histórico persistente (LittleFS)
+// Buffer circular gravado na flash interna do ESP8266: sobrevive a
+// quedas de energia, reinícios e a uploads normais do sketch (o
+// LittleFS fica numa área da flash separada do programa). Só é
+// perdido se, ao gravar, você escolher um "Flash Size" no Arduino
+// IDE sem reservar espaço pra FS, ou apagar a flash inteira.
+//
+// Registro compacto de 16 bytes (valores *10 para guardar 1 casa
+// decimal em inteiro, sem gastar 4 bytes de float por campo).
+#define HIST_FILE       "/historico.bin"
+#define HIST_META_FILE  "/hist_meta.bin"
+#define HIST_INVALID    (-32768)          // sentinela de "sem leitura válida"
+#define HIST_INTERVAL_MS (60UL * 1000UL)  // 1 amostra por minuto
+
+struct __attribute__((packed)) HistRecord {
+    uint32_t epoch;      // horário Unix (0 = hora ainda não sincronizada via NTP)
+    int16_t  temp_x10;   // temperatura x10 (°C)
+    int16_t  umid_x10;   // umidade x10 (%)
+    int16_t  press_x10;  // pressão x10 (hPa)
+    int16_t  alt_m;      // altitude (m, inteiro)
+    uint16_t gas;        // leitura bruta MQ135 (0–1023)
+    uint16_t chuva;      // leitura bruta sensor de chuva (0–1023)
+};
+
+struct __attribute__((packed)) HistMeta {
+    uint32_t capacidade;
+    uint32_t writeIndex;
+    uint32_t count;
+};
+
+bool     histReady      = false;
+uint32_t histCapacity   = 0;
+uint32_t histWriteIndex = 0;
+uint32_t histCount      = 0;
+unsigned long lastHistSample = 0;
+
+// ::: Hardware
 
 #define DHTPIN 2
 #define DHTTYPE DHT11
@@ -75,7 +113,7 @@ String errorLog = "=== Logs do Sistema ===\n";
 WiFiEventHandler wifiConnectHandler;
 WiFiEventHandler wifiDisconnectHandler;
 
-// Configuração
+// ::: Setup
 
 void setup() {
     Serial.begin(115200);
@@ -90,6 +128,8 @@ void setup() {
     } else {
         logInfo("BMP180 inicializado com sucesso");
     }
+
+    histReady = initHistoricoStorage();
 
     WiFi.mode(WIFI_STA);
     WiFi.setSleepMode(WIFI_NONE_SLEEP);
@@ -125,6 +165,8 @@ void setup() {
     server.on("/", handle_OnConnect);
     server.on("/dados", handle_JSONData);
     server.on("/logs", handle_Logs);
+    server.on("/historico", handle_HistData);
+    server.on("/historico/limpar", HTTP_POST, handle_HistClear);
     server.onNotFound(handle_NotFound);
     server.begin();
     logInfo("Servidor HTTP iniciado");
@@ -146,9 +188,14 @@ void loop() {
         localSeconds++;
         lastNTPUpdate = millis();
     }
+
+    if (histReady && millis() - lastHistSample >= HIST_INTERVAL_MS) {
+        lastHistSample = millis();
+        registrarHistorico();
+    }
 }
 
-// WiFi e Tempo
+// ::: WiFi e Tempo
 
 void onWifiConnect(const WiFiEventStationModeGotIP& event) {
     Serial.println("\nConectado ao WiFi!");
@@ -196,7 +243,7 @@ String getFormattedTime() {
     return String(buffer);
 }
 
-// Registros / Log
+// ::: Registros / Logs
 
 void logError(String sensor, String message) {
     String entry = "[ERRO][" + getFormattedTime() + "][" + sensor + "] " + message + "\n";
@@ -212,7 +259,7 @@ void logInfo(String message) {
     Serial.print(entry);
 }
 
-// Leitura de Sensores
+// ::: Leitura de Sensores 
 
 SensorReading readDHT(bool isHumidity) {
     SensorReading result = { NAN, false, "nan" };
@@ -296,7 +343,132 @@ String classificarChuva(int valor) {
     return "Chuva forte";
 }
 
-// Funções auxiliares
+// ::: Histórico persistente (LittleFS)
+
+void salvarHistMeta() {
+    File f = LittleFS.open(HIST_META_FILE, "w");
+    if (!f) { logError("LittleFS", "Falha ao salvar meta do histórico"); return; }
+    HistMeta m = { histCapacity, histWriteIndex, histCount };
+    f.write((uint8_t*)&m, sizeof(m));
+    f.close();
+}
+
+bool initHistoricoStorage() {
+    if (!LittleFS.begin()) {
+        logError("LittleFS", "Falha ao montar sistema de arquivos (reserve espaço de "
+                              "FS em Tools > Flash Size no Arduino IDE)");
+        return false;
+    }
+
+    FSInfo info;
+    LittleFS.info(info);
+
+    // Deixa ~12 KB de folga pra metadados e futuros arquivos, e usa
+    // o resto todo pra maximizar quantas amostras cabem.
+    const size_t reservado = 12288;
+    size_t disponivel = (info.totalBytes > reservado) ? (info.totalBytes - reservado) : 0;
+    uint32_t capacidadeCalculada = disponivel / sizeof(HistRecord);
+    if (capacidadeCalculada < 10) {
+        logError("LittleFS", "Espaço de FS insuficiente para histórico (verifique o "
+                              "Flash Size selecionado no Arduino IDE)");
+        return false;
+    }
+
+    File metaF = LittleFS.open(HIST_META_FILE, "r");
+    bool metaValida = false;
+    if (metaF) {
+        HistMeta m;
+        if (metaF.read((uint8_t*)&m, sizeof(m)) == (int)sizeof(m) &&
+            m.capacidade == capacidadeCalculada && LittleFS.exists(HIST_FILE)) {
+            histCapacity   = m.capacidade;
+            histWriteIndex = m.writeIndex;
+            histCount      = m.count;
+            metaValida     = true;
+        }
+        metaF.close();
+    }
+
+    if (!metaValida) {
+        // Primeira vez (ou a capacidade mudou, ex.: reflash com FS maior/menor)
+        histCapacity   = capacidadeCalculada;
+        histWriteIndex = 0;
+        histCount      = 0;
+        LittleFS.remove(HIST_FILE);
+        File f = LittleFS.open(HIST_FILE, "w");
+        if (f) f.close();
+        salvarHistMeta();
+    }
+
+    logInfo("Histórico: capacidade para " + String(histCapacity) + " amostras (~" +
+            String((histCapacity * sizeof(HistRecord)) / 1024) + " KB), " +
+            String(histCount) + " já armazenadas");
+    return true;
+}
+
+// Grava um novo registro no buffer circular: enquanto não estiver
+// cheio, só acrescenta no fim (append); quando enche, passa a
+// sobrescrever o mais antigo primeiro (roda em círculo).
+void histGravarRegistro(const HistRecord& rec) {
+    if (!histReady) return;
+
+    if (histCount < histCapacity) {
+        File f = LittleFS.open(HIST_FILE, "a");
+        if (!f) { logError("LittleFS", "Falha ao abrir histórico para escrita"); return; }
+        f.write((uint8_t*)&rec, sizeof(rec));
+        f.close();
+        histWriteIndex = histCount + 1;
+        histCount++;
+    } else {
+        File f = LittleFS.open(HIST_FILE, "r+");
+        if (!f) { logError("LittleFS", "Falha ao abrir histórico para sobrescrita"); return; }
+        f.seek((uint32_t)histWriteIndex * sizeof(HistRecord), SeekSet);
+        f.write((uint8_t*)&rec, sizeof(rec));
+        f.close();
+        histWriteIndex = (histWriteIndex + 1) % histCapacity;
+    }
+    salvarHistMeta();
+}
+
+void registrarHistorico() {
+    if (!histReady) return;
+
+    SensorReading temp     = readDHT(false);
+    SensorReading umid     = readDHT(true);
+    SensorReading pressao  = readBMPPressure();
+    SensorReading altitude = readBMPAltitude();
+    int chuva = analogRead(RAIN_SENSOR_PIN);
+    int gas   = analogRead(MQ135_PIN);
+
+    HistRecord rec;
+    rec.epoch     = timeValid ? (uint32_t)time(nullptr) : 0;
+    rec.temp_x10  = temp.valid     ? (int16_t)round(temp.value * 10.0)     : HIST_INVALID;
+    rec.umid_x10  = umid.valid     ? (int16_t)round(umid.value * 10.0)     : HIST_INVALID;
+    rec.press_x10 = pressao.valid  ? (int16_t)round(pressao.value * 10.0) : HIST_INVALID;
+    rec.alt_m     = altitude.valid ? (int16_t)round(altitude.value)        : HIST_INVALID;
+    rec.gas       = (uint16_t)gas;
+    rec.chuva     = (uint16_t)chuva;
+
+    histGravarRegistro(rec);
+
+    String resumo = "Amostra #" + String(histCount) + "/" + String(histCapacity) + " — ";
+    resumo += temp.valid ? ("T=" + String(temp.value, 1) + "C ") : "T=-- ";
+    resumo += umid.valid ? ("U=" + String(umid.value, 1) + "% ") : "U=-- ";
+    resumo += pressao.valid ? ("P=" + String(pressao.value, 1) + "hPa ") : "P=-- ";
+    resumo += "Gas=" + String(gas) + " Chuva=" + String(chuva);
+    logInfo(resumo);
+}
+
+void histApagarTudo() {
+    LittleFS.remove(HIST_FILE);
+    File f = LittleFS.open(HIST_FILE, "w");
+    if (f) f.close();
+    histWriteIndex = 0;
+    histCount = 0;
+    salvarHistMeta();
+    logInfo("Histórico do dispositivo apagado pelo usuário");
+}
+
+// ::: Funções auxiliares
 
 String badge(String status) {
     if (status == "ok")    return "<span class=\"sensor-badge badge-ok\">ok</span>";
@@ -305,7 +477,7 @@ String badge(String status) {
     return "<span class=\"sensor-badge badge-offline\">offline</span>";
 }
 
-// Handlers do Servidor
+// ::: Handlers do Servidor
 
 void handle_JSONData() {
     SensorReading temp     = readDHT(false);
@@ -353,14 +525,80 @@ void handle_Logs() {
     server.send(200, "text/plain; charset=utf-8", errorLog);
 }
 
+void handle_HistData() {
+    if (!histReady) {
+        server.send(503, "application/json", "{\"erro\":\"historico indisponivel\"}");
+        return;
+    }
+
+    uint32_t limite = histCount;
+    if (server.hasArg("limit")) {
+        long l = server.arg("limit").toInt();
+        if (l > 0 && (uint32_t)l < limite) limite = (uint32_t)l;
+    }
+    const uint32_t MAX_RETORNO = 1500; // protege heap do ESP e o navegador
+    if (limite > MAX_RETORNO) limite = MAX_RETORNO;
+
+    File f = LittleFS.open(HIST_FILE, "r");
+    if (!f) {
+        server.send(500, "application/json", "{\"erro\":\"falha ao abrir historico\"}");
+        return;
+    }
+
+    // Resposta enviada em pedaços (chunked), igual ao HTML — nunca
+    // monta o JSON inteiro numa String só na RAM.
+    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    server.send(200, "application/json", "");
+
+    char cab[100];
+    snprintf(cab, sizeof(cab),
+        "{\"capacidade\":%lu,\"registros\":%lu,\"retornados\":%lu,\"dados\":[",
+        (unsigned long)histCapacity, (unsigned long)histCount, (unsigned long)limite);
+    server.sendContent(cab);
+
+    uint32_t oldestIdx = (histCount < histCapacity) ? 0 : histWriteIndex;
+    uint32_t inicioLogico = histCount - limite;
+
+    char tBuf[8], uBuf[8], pBuf[8], aBuf[8];
+    char item[130];
+    for (uint32_t i = 0; i < limite; i++) {
+        uint32_t logico = inicioLogico + i;
+        uint32_t fisico = (oldestIdx + logico) % histCapacity;
+
+        HistRecord rec;
+        f.seek((uint32_t)fisico * sizeof(HistRecord), SeekSet);
+        f.read((uint8_t*)&rec, sizeof(HistRecord));
+
+        if (rec.temp_x10  == HIST_INVALID) strcpy(tBuf, "null"); else dtostrf(rec.temp_x10  / 10.0, 0, 1, tBuf);
+        if (rec.umid_x10  == HIST_INVALID) strcpy(uBuf, "null"); else dtostrf(rec.umid_x10  / 10.0, 0, 1, uBuf);
+        if (rec.press_x10 == HIST_INVALID) strcpy(pBuf, "null"); else dtostrf(rec.press_x10 / 10.0, 0, 1, pBuf);
+        if (rec.alt_m     == HIST_INVALID) strcpy(aBuf, "null"); else snprintf(aBuf, sizeof(aBuf), "%d", rec.alt_m);
+
+        snprintf(item, sizeof(item),
+            "%s{\"t\":%lu,\"temp\":%s,\"umid\":%s,\"press\":%s,\"alt\":%s,\"gas\":%u,\"chuva\":%u}",
+            (i == 0 ? "" : ","), (unsigned long)rec.epoch, tBuf, uBuf, pBuf, aBuf, rec.gas, rec.chuva);
+        server.sendContent(item);
+    }
+    server.sendContent("]}");
+    f.close();
+}
+
+void handle_HistClear() {
+    if (!histReady) {
+        server.send(503, "application/json", "{\"erro\":\"historico indisponivel\"}");
+        return;
+    }
+    histApagarTudo();
+    server.send(200, "application/json", "{\"ok\":true}");
+}
+
 void handle_NotFound() {
     server.send(404, "text/plain", "Recurso não encontrado");
 }
 
-// Blocos de HTML fixos (em FLASH, não em RAM)
-//
+// ::: Blocos de HTML fixos (em FLASH, não em RAM)
 // Cada bloco grande fica em PROGMEM e é enviado direto por
-// sendContent_P — nunca é copiado inteiro para RAM. Só os
+// sendContent_P, nunca é copiado inteiro para RAM. Só os
 // trechos pequenos e dinâmicos (badges, valores, timestamp,
 // config do Gemini) usam String, e são poucos bytes cada.
 
@@ -431,34 +669,53 @@ body {
   transition: background 0.4s ease, color 0.3s ease;
 }
 
-/* Header centralizado */
+/* ::: Header centralizado */
 header {
   background: var(--header-grad);
   border-bottom: 1px solid var(--border);
-  padding: 36px 24px 28px;
+  padding: 40px 24px 30px;
   text-align: center;
   position: relative;
+  overflow: hidden;
   transition: background 0.4s ease, border-color 0.4s ease;
 }
+header::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, transparent, var(--accent), var(--accent2), var(--accent), transparent);
+  opacity: 0.85;
+}
+.header-icon-wrap {
+  width: 56px; height: 56px;
+  margin: 0 auto 14px;
+  border-radius: 16px;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 14%, transparent), color-mix(in srgb, var(--accent2) 14%, transparent));
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+}
 .header-icon {
-  font-size: 2.6rem;
+  font-size: 1.8rem;
   display: block;
-  margin-bottom: 10px;
-  filter: drop-shadow(0 0 12px rgba(94,171,214,0.4));
+  filter: drop-shadow(0 0 10px rgba(94,171,214,0.35));
 }
 header h1 {
   font-family: var(--mono);
-  font-size: 1.45rem;
-  letter-spacing: 0.12em;
-  color: var(--accent2);
+  font-size: 1.5rem;
+  letter-spacing: 0.16em;
+  background: linear-gradient(90deg, var(--accent), var(--accent2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
   font-weight: 700;
 }
 header p {
   font-size: 0.78rem;
   color: var(--sub);
-  margin-top: 5px;
-  font-weight: 300;
-  letter-spacing: 0.03em;
+  margin-top: 6px;
+  font-weight: 400;
+  letter-spacing: 0.04em;
 }
 .header-pills {
   display: flex;
@@ -521,10 +778,10 @@ header p {
   box-shadow: 0 0 12px var(--card-shadow);
 }
 
-/* Layout */
+/* ::: Layout */
 main { padding: 28px 24px; max-width: 1280px; margin: 0 auto; }
 
-/* Métricas */
+/* ::: Métricas */
 .metrics {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
@@ -584,7 +841,7 @@ main { padding: 28px 24px; max-width: 1280px; margin: 0 auto; }
 .metric-value.invalid { color: var(--muted); font-size: 1.4rem; }
 .metric-sub { font-size: 0.7rem; color: var(--sub); margin-top: 4px; }
 
-/* Gráficos */
+/* ::: Gráficos */
 .charts {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -609,7 +866,7 @@ main { padding: 28px 24px; max-width: 1280px; margin: 0 auto; }
 }
 canvas { width: 100% !important; height: 200px !important; }
 
-/* Rodapé de controles */
+/* ::: Rodapé de controles */
 .footer-bar {
   display: flex;
   align-items: center;
@@ -626,8 +883,59 @@ canvas { width: 100% !important; height: 200px !important; }
   color: var(--muted);
 }
 .timestamp span { color: var(--accent); }
+.hist-status { font-family: var(--mono); font-size: 0.68rem; color: var(--muted); margin-top: 3px; }
+.hist-bar-wrap {
+  width: 180px;
+  max-width: 100%;
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 20%, transparent);
+  margin-top: 6px;
+  overflow: hidden;
+}
+.hist-bar-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent), var(--accent2));
+  transition: width 0.6s ease, background 0.4s ease;
+}
+.hist-bar-fill.warn { background: linear-gradient(90deg, var(--warn), var(--danger)); }
 .error-msg { font-size: 0.7rem; color: var(--danger); display: none; margin-top: 3px; }
 .btn-group { display: flex; gap: 9px; flex-wrap: wrap; }
+
+.danger-outline {
+  color: var(--muted);
+}
+.danger-outline:hover {
+  border-color: var(--danger) !important;
+  color: var(--danger) !important;
+  background: color-mix(in srgb, var(--danger) 8%, transparent) !important;
+}
+.danger-outline:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%) translateY(16px);
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 10px 18px;
+  border-radius: 10px;
+  font-size: 0.82rem;
+  box-shadow: 0 8px 24px var(--card-shadow);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  z-index: 999;
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.toast.error { border-color: var(--danger); color: var(--danger); }
 
 button {
   background: transparent;
@@ -661,7 +969,7 @@ button.primary:hover {
   color: var(--btn-primary-text);
 }
 
-/* Chat da Ana */
+/* ::: Chat da Ana */
 .ana-section {
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -681,14 +989,20 @@ button.primary:hover {
   transition: border-color 0.35s ease;
 }
 .ana-avatar {
-  width: 38px; height: 38px;
+  width: 40px; height: 40px;
   border-radius: 50%;
-  background: var(--avatar-grad);
   display: flex; align-items: center; justify-content: center;
-  font-size: 1.1rem;
+  overflow: hidden;
   flex-shrink: 0;
-  box-shadow: 0 0 10px var(--card-shadow);
-  transition: background 0.35s ease;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent), 0 0 14px var(--card-shadow);
+  transition: box-shadow 0.35s ease;
+}
+.ana-avatar.thinking {
+  animation: avatarPulse 1.4s ease-in-out infinite;
+}
+@keyframes avatarPulse {
+  0%, 100% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent), 0 0 10px var(--card-shadow); }
+  50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent2) 40%, transparent), 0 0 20px var(--card-shadow); }
 }
 .ana-info h3 {
   font-size: 0.88rem;
@@ -771,10 +1085,28 @@ button.primary:hover {
 .bubble.thinking {
   align-self: flex-start;
   background: color-mix(in srgb, var(--accent) 6%, transparent);
-  border: 1px dashed color-mix(in srgb, var(--accent) 22%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
   color: var(--muted);
   font-style: italic;
   font-size: 0.76rem;
+  padding: 11px 15px;
+}
+.typing-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.typing-dots span {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  animation: typingDot 1.2s ease-in-out infinite;
+}
+.typing-dots span:nth-child(2) { animation-delay: 0.15s; }
+.typing-dots span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes typingDot {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
+  30% { transform: translateY(-4px); opacity: 1; }
 }
 .type-cursor {
   display: inline-block;
@@ -865,6 +1197,7 @@ button.primary:hover {
 }
 .chat-send:hover { background: var(--accent2); }
 
+/* ::: Responsivo */
 @media (max-width: 700px) {
   header { padding: 28px 16px 22px; }
   main { padding: 16px 14px; }
@@ -877,7 +1210,7 @@ button.primary:hover {
 </style>
 
 <script>
-// Configuração Gemini (injetada pelo ESP)
+// ::: Configuração Gemini (injetada pelo ESP) ──
 )rawliteral";
 
 // Depois deste bloco, o handler injeta as linhas dinâmicas:
@@ -887,9 +1220,10 @@ button.primary:hover {
 //   const GEMINI_FALLBACK = "...";
 
 static const char PAGE_PART2[] PROGMEM = R"rawliteral(
-// Estado
+// ::: Estado
 const charts = {};
 const hist = { labels:[], temp:[], umid:[], press:[], alt:[], gas:[], chuva:[] };
+let histCapacidadeAtual = null;
 let lastSensorData = null;
 let chatOpen = true;
 let chatHistory = []; // histórico de mensagens para contexto
@@ -906,7 +1240,7 @@ function badge(status) {
   return `<span class="sensor-badge ${cls}">${label}</span>`;
 }
 
-// Tema claro/escuro
+// ::: Tema claro/escuro
 function themeColor(varName) {
   return getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
 }
@@ -957,7 +1291,7 @@ function classAr(v) {
   return '🚨 Péssima';
 }
 
-// Gráficos
+// ::: Gráficos
 function initChart(id, type, datasets, yLabel) {
   const ctx = document.getElementById(id).getContext('2d');
   const sub = themeColor('--sub');
@@ -1102,7 +1436,89 @@ function exportCSV() {
   a.click();
 }
 
-// Chat da Ana
+// ::: Histórico persistente (gravado na flash do ESP8266)
+function formatarEpoch(t) {
+  if (!t) return '--:--:--';
+  const dt = new Date(t * 1000);
+  return dt.getHours().toString().padStart(2,'0') + ':' +
+         dt.getMinutes().toString().padStart(2,'0') + ':' +
+         dt.getSeconds().toString().padStart(2,'0');
+}
+
+function atualizarInfoHistorico(registros, capacidade) {
+  const el = document.getElementById('hist-info');
+  const bar = document.getElementById('hist-bar-fill');
+  if (!el) return;
+  if (registros === null) {
+    el.textContent = 'Histórico salvo no dispositivo: indisponível';
+    if (bar) bar.style.width = '0%';
+    return;
+  }
+  const pct = capacidade ? Math.round((registros / capacidade) * 100) : 0;
+  el.textContent = `Histórico salvo no dispositivo: ${registros} / ${capacidade} amostras (${pct}%)`;
+  if (bar) {
+    bar.style.width = pct + '%';
+    bar.classList.toggle('warn', pct >= 85);
+  }
+}
+
+async function carregarHistorico() {
+  try {
+    const r = await fetch('/historico?limit=1000');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+
+    histCapacidadeAtual = d.capacidade;
+    d.dados.forEach(reg => {
+      hist.labels.push(formatarEpoch(reg.t));
+      hist.temp.push(reg.temp);
+      hist.umid.push(reg.umid);
+      hist.press.push(reg.press);
+      hist.alt.push(reg.alt);
+      hist.gas.push(reg.gas);
+      hist.chuva.push(reg.chuva);
+    });
+    updateCharts();
+    atualizarInfoHistorico(d.registros, d.capacidade);
+  } catch (e) {
+    console.warn('Histórico do dispositivo indisponível:', e);
+    atualizarInfoHistorico(null, null);
+  }
+}
+
+function mostrarToast(msg, erro) {
+  let t = document.getElementById('toast');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = 'toast';
+    document.body.appendChild(t);
+  }
+  t.textContent = msg;
+  t.className = 'toast show' + (erro ? ' error' : '');
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => { t.className = 'toast'; }, 3200);
+}
+
+async function limparHistoricoDispositivo() {
+  if (!confirm('Isso apaga permanentemente o histórico salvo no ESP8266 (os gráficos desta sessão continuam até você recarregar a página). Deseja continuar?')) return;
+
+  const btn = document.getElementById('hist-clear-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Apagando...'; }
+
+  try {
+    const r = await fetch('/historico/limpar', { method: 'POST' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    atualizarInfoHistorico(0, histCapacidadeAtual);
+    mostrarToast('Histórico do dispositivo apagado ✅');
+  } catch (e) {
+    mostrarToast('Falha ao apagar o histórico ⚠️', true);
+    console.error(e);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🗑 Apagar histórico salvo'; }
+  }
+}
+
+// ::: Chat da Ana
 function toggleChat() {
   chatOpen = !chatOpen;
   const body = document.getElementById('ana-body');
@@ -1149,9 +1565,25 @@ function addBubble(text, role) {
   return div;
 }
 
+function addTypingIndicator() {
+  const msgs = document.getElementById('chat-messages');
+  if (!msgs) return null;
+  const div = document.createElement('div');
+  div.className = 'bubble thinking';
+  div.id = 'bubble-thinking';
+  div.innerHTML = '<span class="typing-dots"><span></span><span></span><span></span></span>';
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+  const av = document.getElementById('ana-avatar');
+  if (av) av.classList.add('thinking');
+  return div;
+}
+
 function removeThinking() {
   const t = document.getElementById('bubble-thinking');
   if (t) t.remove();
+  const av = document.getElementById('ana-avatar');
+  if (av) av.classList.remove('thinking');
 }
 
 // Converte um subconjunto seguro de Markdown (negrito, itálico, código, quebras
@@ -1218,11 +1650,10 @@ async function askAna(userText) {
   addBubble(userText, 'user');
   chatHistory.push({ role: 'user', parts: [{ text: userText }] });
 
-  const thinking = addBubble('Ana está digitando...', 'thinking');
-  thinking.id = 'bubble-thinking';
+  addTypingIndicator();
 
   const sensorCtx = buildSensorContext();
-  const systemInstruction = `Você é Ana, assistente meteorológica simpática e direta da Estação Formiga, uma estação IoT caseira feita com ESP8266, DHT11, BMP180 e MQ135. Responda sempre em português do Brasil, de forma clara e amigável. Use os dados dos sensores quando relevante. Seja concisa, mas completa. Não invente dados que não estão disponíveis. Não fique falando de si mesmo toda hora, exceto se perguntada, além disso, se for o caso, você foi criada por Jan Caraumã, eng eletricista nos laboratórios de física da universidade federal de roraima, como ferramenta educacional, mais informaçõe no blog pessoal dele em https://www.carauma.com/estacao-meteorologica-baixo-custo-esp8266-formiga, alem disso seja concisa e leve sempre que possível.\n\nDados atuais da estação:\n${sensorCtx}`;
+  const systemInstruction = `Você é Ana, assistente meteorológica simpática e direta da Estação Formiga, uma estação IoT caseira feita com ESP8266, DHT11, BMP180 e MQ135. Responda sempre em português do Brasil, de forma clara e amigável. Use os dados dos sensores quando relevante. Seja concisa, mas completa. Não invente dados que não estão disponíveis.\n\nDados atuais da estação:\n${sensorCtx}`;
 
   // Monta o payload com histórico (máx últimas 6 trocas)
   const recentHistory = chatHistory.slice(-12);
@@ -1274,9 +1705,10 @@ function sendChat() {
   askAna(text);
 }
 
-window.onload = function() {
+window.onload = async function() {
   initTheme();
   initCharts();
+  await carregarHistorico();
   atualizarDados();
   setInterval(atualizarDados, 15000);
 
@@ -1297,7 +1729,7 @@ window.onload = function() {
 
 <header>
   <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" title="Alternar tema" aria-label="Alternar tema claro/escuro">🌙</button>
-  <span class="header-icon">🐜</span>
+  <div class="header-icon-wrap"><span class="header-icon">🐜</span></div>
   <h1>ESTAÇÃO FORMIGA</h1>
   <p>Monitor Ambiental IoT &middot; ESP8266 &middot; DHT11 · BMP180 · MQ135</p>
   <div class="header-pills">
@@ -1376,12 +1808,15 @@ static const char PAGE_PART6[] PROGMEM = R"rawliteral(</div>
       <div class="timestamp" id="ts">Última atualização: <span>)rawliteral";
 
 static const char PAGE_PART7[] PROGMEM = R"rawliteral(</span></div>
+      <div class="hist-status" id="hist-info">Histórico salvo no dispositivo: carregando…</div>
+      <div class="hist-bar-wrap"><div class="hist-bar-fill" id="hist-bar-fill"></div></div>
       <div class="error-msg" id="err-msg"></div>
     </div>
     <div class="btn-group">
       <button onclick="atualizarDados()" class="primary">🔄 Atualizar</button>
       <button onclick="exportCSV()">📥 Exportar CSV</button>
       <button onclick="window.open('/logs')">📋 Logs</button>
+      <button id="hist-clear-btn" class="danger-outline" onclick="limparHistoricoDispositivo()">🗑 Apagar histórico salvo</button>
     </div>
   </div>
 
@@ -1391,7 +1826,19 @@ static const char PAGE_ANA_SECTION[] PROGMEM = R"rawliteral(
   <!-- Chat da Ana -->
   <div class="ana-section" style="margin-bottom:26px;">
     <div class="ana-header" onclick="toggleChat()">
-      <div class="ana-avatar">🌤</div>
+      <div class="ana-avatar" id="ana-avatar">
+        <svg viewBox="0 0 48 48" width="100%" height="100%" aria-hidden="true">
+          <circle cx="24" cy="24" r="24" fill="url(#anaGrad)"/>
+          <defs>
+            <linearGradient id="anaGrad" x1="0" y1="0" x2="48" y2="48" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stop-color="var(--accent)"/>
+              <stop offset="1" stop-color="var(--accent2)"/>
+            </linearGradient>
+          </defs>
+          <path d="M24 10c-5.6 0-9.4 4.3-9.4 9.6 0 2.3.6 4.1 1.5 5.6-2.9 1.1-4.9 2.6-5.9 4.3C8.7 31.8 8 34.6 8 38h32c0-3.4-.7-6.2-2.2-8.5-1-1.7-3-3.2-5.9-4.3.9-1.5 1.5-3.3 1.5-5.6 0-5.3-3.8-9.6-9.4-9.6z" fill="rgba(255,255,255,0.94)"/>
+          <path d="M24 10c-5.6 0-9.4 4.3-9.4 9.6 0 1.1.15 2.1.44 3 3.1-.6 5.5-2.2 6.96-4.4 1.7 2.5 4.7 4.1 8.2 4.5.2-1 .3-2 .3-3.1 0-5.3-3.8-9.6-9.4-9.6z" fill="var(--accent)" opacity="0.55"/>
+        </svg>
+      </div>
       <div class="ana-info">
         <h3>Ana · Assistente Meteorológica</h3>
         <p>Pergunte sobre as condições ambientais da estação</p>
@@ -1420,8 +1867,7 @@ static const char PAGE_TAIL[] PROGMEM = R"rawliteral(
 </body>
 </html>)rawliteral";
 
-// Handler principal: envia a página em pedaços (chunked)
-//
+// ::: Handler principal: envia a página em pedaços (chunked)
 // Nenhuma "String html" gigante é criada. Cada bloco grande vem
 // direto da flash (sendContent_P) e só os trechos pequenos e
 // dinâmicos passam por String, um de cada vez.
