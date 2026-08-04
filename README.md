@@ -5,7 +5,7 @@ A low-cost, open-source IoT weather station built on the ESP8266, with a respons
 
 Blog Post: https://www.carauma.com/estacao-meteorologica-baixo-custo-esp8266-formiga
 
-<img width="1897" height="1549" alt="image" src="https://github.com/user-attachments/assets/f7eee22b-203f-4a89-bb0d-091bd60d8bce" />
+<img width="1897" height="1995" alt="image" src="https://github.com/user-attachments/assets/19f39bbf-b0db-40ae-90b4-e0345db35f0d" />
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
@@ -40,12 +40,16 @@ The project was built with a specific goal in mind: make it possible for schools
 
 Estimated total cost: **R$ 143.48** (approx. US$25–30, prices from Brazilian retailers, March 2025). Prices will vary by region and supplier.
 
+<img width="960" height="1280" alt="image" src="https://github.com/user-attachments/assets/b7c21abd-a138-4ac0-8437-f2ac3494cff2" />
+
 ### Wiring
 
 - DHT11 → D4 (with a 10 kΩ pull-up resistor between VCC and signal)
 - BMP180 → I2C (SDA: D2, SCL: D1)
 - MQ-135 → A0 (analog input)
 - MH-RD → D5 (digital input)
+
+<img width="1779" height="987" alt="image" src="https://github.com/user-attachments/assets/a2301d3f-722b-4818-93e4-79b18ab914e3" />
 
 ## Getting Started
 
