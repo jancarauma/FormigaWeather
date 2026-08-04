@@ -1,6 +1,6 @@
 // ----------------------------------------------
 // Estação Meteorológica IoT com ESP8266
-// (c) 2025 Jan Caraumã <janderson.gomes@ufrr.br>
+// (c) 2025-2026 Jan Caraumã <janderson.gomes@ufrr.br>
 // Corrigido em 01 de agosto de 2026
 // ----------------------------------------------
 
@@ -25,13 +25,18 @@ const char* apPassword = "senha123";
 //TODO IPAddress apGateway(192, 168, 4, 1);
 //TODO IPAddress apSubnet(255, 255, 255, 0);
 
-// ::: Configuração Gemini (opcional)
+// Configuração Gemini (opcional)
 // Preencha para habilitar o chat da Ana. Deixe vazio para ocultar o chat.
-const char* GEMINI_KEY            = ""; // <-- coloque sua chave/key aqui
+const char* GEMINI_KEY            = ""; // <-- coloque sua chave/key aqui.
 const char* GEMINI_MODEL          = "gemini-3.1-flash-lite-preview";
 const char* GEMINI_FALLBACK_MODEL = "gemini-1.5-flash";
 
-// ::: Tipos
+// Gemini Text-to-Speech (opcional): usa a mesma GEMINI_KEY acima.
+const char* GEMINI_TTS_MODEL          = "gemini-3.1-flash-tts-preview";
+const char* GEMINI_TTS_FALLBACK_MODEL = "";
+const char* GEMINI_TTS_VOICE          = "Achernar";
+
+// Tipos
 
 struct SensorReading {
     float value;
@@ -39,7 +44,7 @@ struct SensorReading {
     String status; // "ok", "nan", "range", "offline"
 };
 
-// ::: Histórico persistente (LittleFS)
+// Histórico persistente (LittleFS)
 // Buffer circular gravado na flash interna do ESP8266: sobrevive a
 // quedas de energia, reinícios e a uploads normais do sketch (o
 // LittleFS fica numa área da flash separada do programa). Só é
@@ -75,7 +80,7 @@ uint32_t histWriteIndex = 0;
 uint32_t histCount      = 0;
 unsigned long lastHistSample = 0;
 
-// ::: Hardware
+// Hardware
 
 #define DHTPIN 2
 #define DHTTYPE DHT11
@@ -113,7 +118,37 @@ String errorLog = "=== Logs do Sistema ===\n";
 WiFiEventHandler wifiConnectHandler;
 WiFiEventHandler wifiDisconnectHandler;
 
-// ::: Setup
+// Protótipos de Funções
+void onWifiConnect(const WiFiEventStationModeGotIP& event);
+void onWifiDisconnect(const WiFiEventStationModeDisconnected& event);
+void setupMDNS();
+void setupNTP();
+String getFormattedTime();
+
+void logError(String sensor, String message);
+void logInfo(String message);
+
+SensorReading readDHT(bool isHumidity);
+SensorReading readBMPPressure();
+SensorReading readBMPAltitude();
+String classificarChuva(int valor);
+
+bool initHistoricoStorage();
+void salvarHistMeta();
+void histGravarRegistro(const HistRecord& rec);
+void registrarHistorico();
+void histApagarTudo();
+
+String badge(String status);
+
+void handle_OnConnect();
+void handle_JSONData();
+void handle_Logs();
+void handle_HistData();
+void handle_HistClear();
+void handle_NotFound();
+
+// Setup
 
 void setup() {
     Serial.begin(115200);
@@ -195,7 +230,7 @@ void loop() {
     }
 }
 
-// ::: WiFi e Tempo
+// WiFi e Tempo
 
 void onWifiConnect(const WiFiEventStationModeGotIP& event) {
     Serial.println("\nConectado ao WiFi!");
@@ -243,7 +278,7 @@ String getFormattedTime() {
     return String(buffer);
 }
 
-// ::: Registros / Logs
+// Log
 
 void logError(String sensor, String message) {
     String entry = "[ERRO][" + getFormattedTime() + "][" + sensor + "] " + message + "\n";
@@ -259,7 +294,7 @@ void logInfo(String message) {
     Serial.print(entry);
 }
 
-// ::: Leitura de Sensores 
+// Leitura de Sensores (Resiliente)
 
 SensorReading readDHT(bool isHumidity) {
     SensorReading result = { NAN, false, "nan" };
@@ -343,7 +378,7 @@ String classificarChuva(int valor) {
     return "Chuva forte";
 }
 
-// ::: Histórico persistente (LittleFS)
+// Histórico persistente (LittleFS)
 
 void salvarHistMeta() {
     File f = LittleFS.open(HIST_META_FILE, "w");
@@ -468,7 +503,7 @@ void histApagarTudo() {
     logInfo("Histórico do dispositivo apagado pelo usuário");
 }
 
-// ::: Funções auxiliares
+// Funções auxiliares do HTML
 
 String badge(String status) {
     if (status == "ok")    return "<span class=\"sensor-badge badge-ok\">ok</span>";
@@ -477,7 +512,7 @@ String badge(String status) {
     return "<span class=\"sensor-badge badge-offline\">offline</span>";
 }
 
-// ::: Handlers do Servidor
+// Handlers do Servidor
 
 void handle_JSONData() {
     SensorReading temp     = readDHT(false);
@@ -596,9 +631,9 @@ void handle_NotFound() {
     server.send(404, "text/plain", "Recurso não encontrado");
 }
 
-// ::: Blocos de HTML fixos (em FLASH, não em RAM)
+// Blocos de HTML fixos (em FLASH, não em RAM)
 // Cada bloco grande fica em PROGMEM e é enviado direto por
-// sendContent_P, nunca é copiado inteiro para RAM. Só os
+// sendContent_P — nunca é copiado inteiro para RAM. Só os
 // trechos pequenos e dinâmicos (badges, valores, timestamp,
 // config do Gemini) usam String, e são poucos bytes cada.
 
@@ -611,6 +646,8 @@ static const char PAGE_PART1[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 <style>
 :root {
   --bg-grad:  linear-gradient(135deg, #eef1ff 0%, #f0f7ff 45%, #eafbfa 100%);
@@ -669,7 +706,7 @@ body {
   transition: background 0.4s ease, color 0.3s ease;
 }
 
-/* ::: Header centralizado */
+/*  Header centralizado */
 header {
   background: var(--header-grad);
   border-bottom: 1px solid var(--border);
@@ -778,10 +815,10 @@ header p {
   box-shadow: 0 0 12px var(--card-shadow);
 }
 
-/* ::: Layout */
+/*  Layout */
 main { padding: 28px 24px; max-width: 1280px; margin: 0 auto; }
 
-/* ::: Métricas */
+/*  Métricas */
 .metrics {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
@@ -841,7 +878,7 @@ main { padding: 28px 24px; max-width: 1280px; margin: 0 auto; }
 .metric-value.invalid { color: var(--muted); font-size: 1.4rem; }
 .metric-sub { font-size: 0.7rem; color: var(--sub); margin-top: 4px; }
 
-/* ::: Gráficos */
+/*  Gráficos */
 .charts {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -866,7 +903,98 @@ main { padding: 28px 24px; max-width: 1280px; margin: 0 auto; }
 }
 canvas { width: 100% !important; height: 200px !important; }
 
-/* ::: Rodapé de controles */
+/*  Mapa e previsão */
+.weather-layout {
+  display: grid;
+  grid-template-columns: 1.25fr 1fr;
+  gap: 16px;
+  margin-bottom: 26px;
+}
+.weather-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+.weather-title {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--sub);
+  margin-bottom: 10px;
+}
+.map-box {
+  width: 100%;
+  height: 320px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+#station-map {
+  width: 100%;
+  height: 100%;
+}
+.coord-text {
+  margin-top: 8px;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  color: var(--muted);
+}
+.weather-now {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.wx-pill {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+.wx-label {
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--sub);
+}
+.wx-value {
+  font-family: var(--mono);
+  font-size: 0.9rem;
+  color: var(--text);
+  margin-top: 3px;
+}
+.weather-next {
+  display: grid;
+  gap: 8px;
+}
+.wx-day {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 9px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.wx-day-name {
+  font-size: 0.74rem;
+  color: var(--sub);
+  min-width: 86px;
+}
+.wx-day-main {
+  font-size: 0.76rem;
+  color: var(--text);
+  flex: 1;
+}
+.wx-day-rain {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--accent);
+}
+
+/*  Rodapé de controles */
 .footer-bar {
   display: flex;
   align-items: center;
@@ -969,7 +1097,7 @@ button.primary:hover {
   color: var(--btn-primary-text);
 }
 
-/* ::: Chat da Ana */
+/*  Chat da Ana */
 .ana-section {
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -1074,6 +1202,8 @@ button.primary:hover {
   border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
   color: var(--text);
   border-bottom-left-radius: 4px;
+  position: relative;
+  padding-right: 34px;
 }
 .bubble.user {
   align-self: flex-end;
@@ -1141,6 +1271,36 @@ button.primary:hover {
   word-break: break-word;
 }
 
+.bubble-tts {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  color: var(--sub);
+  font-size: 0.72rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-2px);
+  transition: opacity 0.15s ease, transform 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.bubble.ana:hover .bubble-tts {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+.bubble-tts:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .quick-btns {
   display: flex;
   gap: 7px;
@@ -1197,10 +1357,13 @@ button.primary:hover {
 }
 .chat-send:hover { background: var(--accent2); }
 
-/* ::: Responsivo */
+/*  Responsivo */
 @media (max-width: 700px) {
   header { padding: 28px 16px 22px; }
   main { padding: 16px 14px; }
+  .weather-layout { grid-template-columns: 1fr; }
+  .map-box { height: 260px; }
+  .weather-now { grid-template-columns: 1fr; }
   .charts { grid-template-columns: 1fr; }
   .chart-card.full { grid-column: 1; }
   .metric-value { font-size: 1.5rem; }
@@ -1210,7 +1373,7 @@ button.primary:hover {
 </style>
 
 <script>
-// ::: Configuração Gemini (injetada pelo ESP) ──
+// Configuração Gemini (injetada pelo ESP)
 )rawliteral";
 
 // Depois deste bloco, o handler injeta as linhas dinâmicas:
@@ -1218,15 +1381,28 @@ button.primary:hover {
 //   const GEMINI_KEY = "...";
 //   const GEMINI_MODEL = "...";
 //   const GEMINI_FALLBACK = "...";
+//   const GEMINI_TTS_MODEL = "...";
+//   const GEMINI_TTS_FALLBACK = "...";
+//   const GEMINI_TTS_VOICE = "...";
 
 static const char PAGE_PART2[] PROGMEM = R"rawliteral(
-// ::: Estado
+// Estado
 const charts = {};
 const hist = { labels:[], temp:[], umid:[], press:[], alt:[], gas:[], chuva:[] };
 let histCapacidadeAtual = null;
 let lastSensorData = null;
 let chatOpen = true;
 let chatHistory = []; // histórico de mensagens para contexto
+const COORD_INIT_LAG = 2.8351669;
+const COORD_INIT_LNG = -60.6947629;
+const LOCATION_STORAGE_KEY = 'estacao-station-coords';
+let stationMap = null;
+let stationMarker = null;
+let stationCoords = { lat: COORD_INIT_LAG, lng: COORD_INIT_LNG };
+let weatherState = null;
+let ttsAudio = null;
+const ttsCache = new Map();
+const MAX_TTS_CHARS = 2400;
 
 const BADGE = {
   ok:      ['badge-ok','ok'],
@@ -1240,7 +1416,198 @@ function badge(status) {
   return `<span class="sensor-badge ${cls}">${label}</span>`;
 }
 
-// ::: Tema claro/escuro
+function textForSpeech(text) {
+  return String(text)
+    .replace(/```[\s\S]*?```/g, ' trecho de código ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/[*_#>-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function cacheSetAudio(key, dataUrl) {
+  ttsCache.set(key, dataUrl);
+  if (ttsCache.size > 24) {
+    const oldest = ttsCache.keys().next().value;
+    ttsCache.delete(oldest);
+  }
+}
+
+function buildGeminiTtsPrompt(text) {
+  return [
+    'Synthesize speech only. Do not read instructions, markdown, or metadata aloud.',
+    '# AUDIO PROFILE',
+    'Ana, a warm and trustworthy weather assistant.',
+    'Language: Portuguese (Brazil).',
+    'Style: warm, clear, pleasant and natural.',
+    'Pacing: calm conversational pace with natural pauses.',
+    'Delivery: confident and friendly, never robotic.',
+    '### TRANSCRIPT',
+    '[warmly] ' + text
+  ].join('\n');
+}
+
+function base64ToBytes(b64) {
+  const binary = atob(b64);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+  return out;
+}
+
+function pcm16ToWavBlob(pcmBytes, sampleRate) {
+  const channels = 1;
+  const bitsPerSample = 16;
+  const byteRate = sampleRate * channels * (bitsPerSample / 8);
+  const blockAlign = channels * (bitsPerSample / 8);
+  const wav = new ArrayBuffer(44 + pcmBytes.length);
+  const view = new DataView(wav);
+  const writeStr = (offset, s) => {
+    for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i));
+  };
+
+  writeStr(0, 'RIFF');
+  view.setUint32(4, 36 + pcmBytes.length, true);
+  writeStr(8, 'WAVE');
+  writeStr(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, channels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, bitsPerSample, true);
+  writeStr(36, 'data');
+  view.setUint32(40, pcmBytes.length, true);
+
+  new Uint8Array(wav, 44).set(pcmBytes);
+  return new Blob([wav], { type: 'audio/wav' });
+}
+
+function normalizeAudioBlob(mimeType, audioBase64) {
+  const mime = String(mimeType || 'audio/wav').toLowerCase();
+  const bytes = base64ToBytes(audioBase64);
+  if (mime.includes('wav') || mime.includes('mp3') || mime.includes('ogg')) {
+    return new Blob([bytes], { type: mimeType || 'audio/wav' });
+  }
+  if (mime.includes('l16') || mime.includes('pcm') || mime.includes('raw')) {
+    const m = mime.match(/rate=(\d+)/i);
+    const sr = Number(m?.[1] || 24000) || 24000;
+    return pcm16ToWavBlob(bytes, sr);
+  }
+  return new Blob([bytes], { type: 'audio/wav' });
+}
+
+async function callGeminiTtsModel(model, prompt) {
+  const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + encodeURIComponent(GEMINI_KEY);
+  const payload = {
+    contents: [{ parts: [{ text: prompt }] }],
+    generationConfig: {
+      responseModalities: ['AUDIO'],
+      speechConfig: {
+        voiceConfig: {
+          prebuiltVoiceConfig: {
+            voiceName: GEMINI_TTS_VOICE || 'Achernar'
+          }
+        }
+      },
+      temperature: 0.9
+    }
+  };
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = String(data?.error?.message || ('HTTP ' + res.status));
+    throw new Error('Gemini TTS HTTP ' + res.status + ' :: ' + detail.substring(0, 180));
+  }
+
+  const parts = data?.candidates?.[0]?.content?.parts;
+  if (!Array.isArray(parts)) return null;
+  const audioPart = parts.find(p => typeof p?.inlineData?.data === 'string');
+  if (!audioPart?.inlineData?.data) return null;
+
+  return {
+    mimeType: String(audioPart.inlineData.mimeType || 'audio/wav'),
+    audioBase64: audioPart.inlineData.data
+  };
+}
+
+async function speakText(text) {
+  if (!GEMINI_KEY) {
+    mostrarToast('Defina GEMINI_KEY no sketch para usar voz Gemini.', true);
+    return;
+  }
+  const cleaned = textForSpeech(text);
+  if (!cleaned) return;
+  if (cleaned.length > MAX_TTS_CHARS) {
+    mostrarToast('Mensagem muito longa para TTS (máx 2400 caracteres).', true);
+    return;
+  }
+
+  if (ttsAudio) {
+    ttsAudio.pause();
+    ttsAudio = null;
+  }
+
+  try {
+    let dataUrl = ttsCache.get(cleaned);
+    if (!dataUrl) {
+      const prompt = buildGeminiTtsPrompt(cleaned);
+      let audio = null;
+
+      if (GEMINI_TTS_MODEL) {
+        try {
+          audio = await callGeminiTtsModel(GEMINI_TTS_MODEL, prompt);
+        } catch (e) {
+          if (!GEMINI_TTS_FALLBACK || GEMINI_TTS_FALLBACK === GEMINI_TTS_MODEL) throw e;
+        }
+      }
+
+      if (!audio && GEMINI_TTS_FALLBACK && GEMINI_TTS_FALLBACK !== GEMINI_TTS_MODEL) {
+        audio = await callGeminiTtsModel(GEMINI_TTS_FALLBACK, prompt);
+      }
+
+      if (!audio) throw new Error('Resposta sem áudio inline do Gemini TTS');
+
+      const blob = normalizeAudioBlob(audio.mimeType, audio.audioBase64);
+      dataUrl = URL.createObjectURL(blob);
+      cacheSetAudio(cleaned, dataUrl);
+    }
+
+    ttsAudio = new Audio(dataUrl);
+    await ttsAudio.play();
+  } catch (e) {
+    console.error('Erro Gemini TTS:', e);
+    mostrarToast('Falha ao gerar voz via Gemini TTS.', true);
+  }
+}
+
+function attachSpeakButtonIfAna(div, role, originalText) {
+  if (!div || role !== 'ana') return;
+  const btn = document.createElement('button');
+  btn.className = 'bubble-tts';
+  btn.type = 'button';
+  btn.title = 'Ouvir mensagem';
+  btn.setAttribute('aria-label', 'Ouvir mensagem');
+  btn.textContent = '🔊';
+  btn.addEventListener('click', async (ev) => {
+    ev.stopPropagation();
+    const before = btn.textContent;
+    btn.textContent = '⏳';
+    btn.disabled = true;
+    await speakText(originalText || div.innerText || '');
+    btn.disabled = false;
+    btn.textContent = before;
+  });
+  div.appendChild(btn);
+}
+
+// Tema claro/escuro
 function themeColor(varName) {
   return getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
 }
@@ -1291,7 +1658,159 @@ function classAr(v) {
   return '🚨 Péssima';
 }
 
-// ::: Gráficos
+function weatherCodePtBr(code) {
+  const map = {
+    0: 'Céu limpo',
+    1: 'Predomínio de sol',
+    2: 'Parcialmente nublado',
+    3: 'Nublado',
+    45: 'Névoa',
+    48: 'Névoa com geada',
+    51: 'Garoa leve',
+    53: 'Garoa moderada',
+    55: 'Garoa intensa',
+    56: 'Garoa congelante leve',
+    57: 'Garoa congelante intensa',
+    61: 'Chuva fraca',
+    63: 'Chuva moderada',
+    65: 'Chuva forte',
+    66: 'Chuva congelante fraca',
+    67: 'Chuva congelante forte',
+    71: 'Neve fraca',
+    73: 'Neve moderada',
+    75: 'Neve forte',
+    77: 'Grãos de neve',
+    80: 'Pancadas fracas',
+    81: 'Pancadas moderadas',
+    82: 'Pancadas fortes',
+    85: 'Pancadas de neve fracas',
+    86: 'Pancadas de neve fortes',
+    95: 'Trovoada',
+    96: 'Trovoada com granizo fraco',
+    99: 'Trovoada com granizo forte'
+  };
+  return map[code] || 'Condição variável';
+}
+
+function loadSavedCoords() {
+  try {
+    const raw = localStorage.getItem(LOCATION_STORAGE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    const lat = Number(parsed?.lat);
+    const lng = Number(parsed?.lng);
+    if (Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180) {
+      stationCoords = { lat, lng };
+    }
+  } catch (e) {
+    console.warn('Não foi possível carregar coordenadas salvas:', e);
+  }
+}
+
+function persistCoords() {
+  localStorage.setItem(LOCATION_STORAGE_KEY, JSON.stringify(stationCoords));
+}
+
+function updateCoordsLabel() {
+  const el = document.getElementById('selected-coords');
+  if (!el) return;
+  el.textContent = `Local da estação: ${stationCoords.lat.toFixed(6)}, ${stationCoords.lng.toFixed(6)} (clique no mapa para alterar)`;
+}
+
+function initStationMap() {
+  loadSavedCoords();
+  stationMap = L.map('station-map', { zoomControl: true }).setView([stationCoords.lat, stationCoords.lng], 12);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap contributors'
+  }).addTo(stationMap);
+
+  stationMarker = L.marker([stationCoords.lat, stationCoords.lng], {
+    title: 'Local da estação meteorológica'
+  }).addTo(stationMap);
+
+  stationMap.on('click', (e) => {
+    stationCoords = { lat: e.latlng.lat, lng: e.latlng.lng };
+    stationMarker.setLatLng(e.latlng);
+    persistCoords();
+    updateCoordsLabel();
+    carregarPrevisaoTempo();
+  });
+
+  updateCoordsLabel();
+  setTimeout(() => stationMap.invalidateSize(), 120);
+}
+
+function renderPrevisaoTempo(data) {
+  const nowEl = document.getElementById('weather-now');
+  const daysEl = document.getElementById('weather-next');
+  if (!nowEl || !daysEl) return;
+
+  const c = data.current || {};
+  const hourly = data.hourly || {};
+  const daily = data.daily || {};
+  const tNow = (typeof c.temperature_2m === 'number') ? `${c.temperature_2m.toFixed(1)} °C` : '—';
+  const rNow = (typeof c.rain === 'number') ? `${c.rain.toFixed(1)} mm` : '—';
+  const pNow = (typeof c.precipitation === 'number') ? `${c.precipitation.toFixed(1)} mm` : '—';
+  const wNow = weatherCodePtBr(c.weather_code);
+
+  let probNow = '—';
+  if (hourly.time && hourly.precipitation_probability && c.time) {
+    const idx = hourly.time.indexOf(c.time);
+    if (idx >= 0 && typeof hourly.precipitation_probability[idx] === 'number') {
+      probNow = `${hourly.precipitation_probability[idx]}%`;
+    }
+  }
+
+  nowEl.innerHTML = `
+    <div class="wx-pill"><div class="wx-label">Condição</div><div class="wx-value">${wNow}</div></div>
+    <div class="wx-pill"><div class="wx-label">Temperatura</div><div class="wx-value">${tNow}</div></div>
+    <div class="wx-pill"><div class="wx-label">Prob. de chuva</div><div class="wx-value">${probNow}</div></div>
+    <div class="wx-pill"><div class="wx-label">Chuva agora</div><div class="wx-value">${rNow} (${pNow})</div></div>
+  `;
+
+  const times = daily.time || [];
+  const tMax = daily.temperature_2m_max || [];
+  const tMin = daily.temperature_2m_min || [];
+  const rainChance = daily.precipitation_probability_max || [];
+  const rainSum = daily.rain_sum || [];
+  const weather = daily.weather_code || [];
+
+  daysEl.innerHTML = times.slice(0, 4).map((iso, i) => {
+    const dt = new Date(iso + 'T00:00:00');
+    const dia = dt.toLocaleDateString('pt-BR', { weekday: 'short', day: '2-digit', month: '2-digit' });
+    const cond = weatherCodePtBr(weather[i]);
+    const faixa = `${typeof tMin[i] === 'number' ? tMin[i].toFixed(0) : '--'}° / ${typeof tMax[i] === 'number' ? tMax[i].toFixed(0) : '--'}°`;
+    const chuva = `${typeof rainChance[i] === 'number' ? rainChance[i] : '--'}% · ${typeof rainSum[i] === 'number' ? rainSum[i].toFixed(1) : '--'} mm`;
+    return `<div class="wx-day"><div class="wx-day-name">${dia}</div><div class="wx-day-main">${cond} · ${faixa}</div><div class="wx-day-rain">${chuva}</div></div>`;
+  }).join('');
+}
+
+async function carregarPrevisaoTempo() {
+  const status = document.getElementById('weather-status');
+  if (status) status.textContent = 'Atualizando previsão...';
+  const lat = stationCoords.lat.toFixed(6);
+  const lng = stationCoords.lng.toFixed(6);
+  const url = 'https://api.open-meteo.com/v1/forecast'
+    + `?latitude=${lat}&longitude=${lng}`
+    + '&current=temperature_2m,relative_humidity_2m,precipitation,rain,weather_code'
+    + '&hourly=precipitation_probability'
+    + '&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,rain_sum'
+    + '&timezone=auto&forecast_days=4';
+  try {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    weatherState = d;
+    renderPrevisaoTempo(d);
+    if (status) status.textContent = `Previsão por Open-Meteo · ${new Date().toLocaleTimeString('pt-BR')}`;
+  } catch (e) {
+    if (status) status.textContent = 'Falha ao carregar previsão do tempo';
+    console.error('Erro previsão do tempo:', e);
+  }
+}
+
+// Gráficos
 function initChart(id, type, datasets, yLabel) {
   const ctx = document.getElementById(id).getContext('2d');
   const sub = themeColor('--sub');
@@ -1436,7 +1955,7 @@ function exportCSV() {
   a.click();
 }
 
-// ::: Histórico persistente (gravado na flash do ESP8266)
+// Histórico persistente (gravado na flash do ESP8266)
 function formatarEpoch(t) {
   if (!t) return '--:--:--';
   const dt = new Date(t * 1000);
@@ -1518,7 +2037,7 @@ async function limparHistoricoDispositivo() {
   }
 }
 
-// ::: Chat da Ana
+// Chat da Ana
 function toggleChat() {
   chatOpen = !chatOpen;
   const body = document.getElementById('ana-body');
@@ -1541,15 +2060,20 @@ function limparChat() {
 function buildSensorContext() {
   if (!lastSensorData) return 'Ainda aguardando leitura dos sensores.';
   const d = lastSensorData;
+  const weatherResumo = weatherState?.current
+    ? `Condição externa (Open-Meteo): ${weatherCodePtBr(weatherState.current.weather_code)}, temperatura ${typeof weatherState.current.temperature_2m === 'number' ? weatherState.current.temperature_2m.toFixed(1) + ' °C' : 'n/d'}, chuva ${typeof weatherState.current.rain === 'number' ? weatherState.current.rain.toFixed(1) + ' mm' : 'n/d'}`
+    : 'Condição externa (Open-Meteo): indisponível';
   const linhas = [
     `Horário: ${d.data_hora}`,
+    `Coordenadas da estação: ${stationCoords.lat.toFixed(6)}, ${stationCoords.lng.toFixed(6)}`,
     `Temperatura: ${d.temperatura !== null ? d.temperatura.toFixed(1) + ' ºC' : 'indisponível (sensor: ' + d.temperatura_status + ')'}`,
     `Umidade relativa: ${d.umidade !== null ? d.umidade.toFixed(1) + ' %' : 'indisponível (sensor: ' + d.umidade_status + ')'}`,
     `Pressão atmosférica: ${d.pressao !== null ? d.pressao.toFixed(1) + ' hPa' : 'indisponível (sensor: ' + d.pressao_status + ')'}`,
     `Altitude estimada: ${d.altitude !== null ? d.altitude.toFixed(1) + ' m' : 'indisponível'}`,
     `Qualidade do ar (MQ135): ${d.qualidade_ar} ppm`,
     `Precipitação: ${d.chuva}`,
-    `Status de rede: ${d.status}`
+    `Status de rede: ${d.status}`,
+    weatherResumo
   ];
   return linhas.join('\n');
 }
@@ -1560,6 +2084,7 @@ function addBubble(text, role) {
   const div = document.createElement('div');
   div.className = 'bubble ' + role;
   div.textContent = text;
+  attachSpeakButtonIfAna(div, role, text);
   msgs.appendChild(div);
   msgs.scrollTop = msgs.scrollHeight;
   return div;
@@ -1636,6 +2161,7 @@ function typeBubble(text, role) {
       } else {
         div.classList.remove('typing');
         div.innerHTML = renderMarkdown(acumulado);
+        attachSpeakButtonIfAna(div, role, text);
         resolve(div);
       }
     }
@@ -1708,9 +2234,12 @@ function sendChat() {
 window.onload = async function() {
   initTheme();
   initCharts();
+  initStationMap();
+  await carregarPrevisaoTempo();
   await carregarHistorico();
   atualizarDados();
   setInterval(atualizarDados, 15000);
+  setInterval(carregarPrevisaoTempo, 15 * 60 * 1000);
 
   // Mensagem de boas-vindas da Ana, animada (só se habilitada)
   if (ANA_ENABLED) {
@@ -1784,6 +2313,23 @@ static const char PAGE_PART6[] PROGMEM = R"rawliteral(</div>
       <div class="metric-value" style="font-size:1.05rem;">—</div>
     </div>
 
+  </div>
+
+  <!-- Mapa e previsão sem chave -->
+  <div class="weather-layout">
+    <div class="weather-card">
+      <div class="weather-title">Local da Estação no Mapa</div>
+      <div class="map-box"><div id="station-map"></div></div>
+      <div class="coord-text" id="selected-coords">Local da estação: carregando...</div>
+    </div>
+    <div class="weather-card">
+      <div class="weather-title">Previsão do Tempo e Chuva</div>
+      <div class="weather-now" id="weather-now">
+        <div class="wx-pill"><div class="wx-label">Condição</div><div class="wx-value">Carregando...</div></div>
+      </div>
+      <div class="weather-next" id="weather-next"></div>
+      <div class="coord-text" id="weather-status">Previsão sem chave (Open-Meteo)</div>
+    </div>
   </div>
 
   <!-- Gráficos -->
@@ -1867,10 +2413,12 @@ static const char PAGE_TAIL[] PROGMEM = R"rawliteral(
 </body>
 </html>)rawliteral";
 
-// ::: Handler principal: envia a página em pedaços (chunked)
+// *************************************************************
+// Handler principal: envia a página em pedaços (chunked)
 // Nenhuma "String html" gigante é criada. Cada bloco grande vem
 // direto da flash (sendContent_P) e só os trechos pequenos e
 // dinâmicos passam por String, um de cada vez.
+// ********************************************
 void handle_OnConnect() {
     SensorReading temp = readDHT(false);
     SensorReading umid = readDHT(true);
@@ -1890,11 +2438,17 @@ void handle_OnConnect() {
         server.sendContent("const GEMINI_KEY = \"" + String(GEMINI_KEY) + "\";\n");
         server.sendContent("const GEMINI_MODEL = \"" + String(GEMINI_MODEL) + "\";\n");
         server.sendContent("const GEMINI_FALLBACK = \"" + String(GEMINI_FALLBACK_MODEL) + "\";\n");
+        server.sendContent("const GEMINI_TTS_MODEL = \"" + String(GEMINI_TTS_MODEL) + "\";\n");
+        server.sendContent("const GEMINI_TTS_FALLBACK = \"" + String(GEMINI_TTS_FALLBACK_MODEL) + "\";\n");
+        server.sendContent("const GEMINI_TTS_VOICE = \"" + String(GEMINI_TTS_VOICE) + "\";\n");
     } else {
         server.sendContent("const ANA_ENABLED = false;\n");
         server.sendContent("const GEMINI_KEY = '';\n");
         server.sendContent("const GEMINI_MODEL = '';\n");
         server.sendContent("const GEMINI_FALLBACK = '';\n");
+        server.sendContent("const GEMINI_TTS_MODEL = '';\n");
+        server.sendContent("const GEMINI_TTS_FALLBACK = '';\n");
+        server.sendContent("const GEMINI_TTS_VOICE = '';\n");
     }
 
     // Bloco 2: resto do JS + body + header, até a abertura do <main>
